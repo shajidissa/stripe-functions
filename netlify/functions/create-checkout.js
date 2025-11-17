@@ -1,29 +1,9 @@
-// netlify/functions/create-checkout.js
-// Secure Stripe Checkout creator for a static site (Netlify Functions).
-// Uses a server-side catalog (mirrors products.json) so prices can't be tampered with.
-
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// ---- Server-side catalog (GBP, pence) matching your products.json ----
-const CURRENCY = 'gbp';
-const CATALOG = {
-    "1": { name: "Classic Black Hoodie", unit_amount: 4999 },
-    "2": { name: "Neon Green Hoodie",    unit_amount: 5499 },
-    "3": { name: "Vintage Red Hoodie",   unit_amount: 5299 },
-    "4": { name: "Minimal White Hoodie", unit_amount: 4799 },
-    "5": { name: "Camo Hoodie",          unit_amount: 5999 },
-    "6": { name: "Tie-Dye Hoodie",       unit_amount: 5699 }
-};
-
-// Optional: if calling this function from a different origin during dev
+// ✅ add the origins you’ll call from (your local server + your Netlify site)
 const ALLOWED_ORIGINS = [
-    'http://localhost:8888',  // netlify dev default
-    'http://localhost:3000',
-    'http://127.0.0.1:5500',
-    'http://localhost:5173',
-    'http://localhost:63342',
-    // add your deployed site too (replace below):
-    'https://clarity-shop.netlify.app'
+    'http://localhost:63342',             // your local origin (JetBrains/WebStorm)
+    'https://clarity-shop.netlify.app'       // your deployed site
 ];
 const corsHeaders = (origin) => ({
     'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
@@ -31,7 +11,9 @@ const corsHeaders = (origin) => ({
     'Access-Control-Allow-Headers': 'Content-Type'
 });
 
-// Where to send users after payment/cancel
+// Keep your existing SITE_URL logic; for Option B either:
+//  - leave SITE_URL = your Netlify domain (stripe will redirect to your deployed success/cancel)
+//  - OR temporarily set SITE_URL = http://localhost:63342 in Netlify env if you want Stripe to return to local pages during dev.
 const SITE_URL =
     process.env.SITE_URL ||
     process.env.URL ||
@@ -41,61 +23,17 @@ const SITE_URL =
 exports.handler = async (event) => {
     const origin = event.headers.origin || '';
 
+    // ✅ preflight
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 204, headers: corsHeaders(origin) };
     }
+
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, headers: corsHeaders(origin), body: 'Method Not Allowed' };
     }
 
     try {
-        const { items } = JSON.parse(event.body || '{}');
-        if (!Array.isArray(items) || items.length === 0) {
-            return { statusCode: 400, headers: corsHeaders(origin), body: 'No items in request.' };
-        }
-
-        // Build Stripe line_items from server-side truth
-        const line_items = items.map((it) => {
-            const id = String(it.id);
-            const qty = Math.max(1, parseInt(it.quantity || 1, 10));
-            const product = CATALOG[id];
-            if (!product) throw new Error(`Unknown product id: ${id}`);
-
-            return {
-                price_data: {
-                    currency: CURRENCY,
-                    product_data: {
-                        name: product.name,
-                    },
-                    unit_amount: product.unit_amount
-                },
-                quantity: qty
-            };
-        });
-
-        const session = await stripe.checkout.sessions.create({
-            mode: 'payment',
-            line_items,
-            allow_promotion_codes: true,
-
-            // Physical goods → collect addresses (adjust countries as needed)
-            billing_address_collection: 'required',
-            shipping_address_collection: {
-                allowed_countries: ['GB', 'IE', 'FR', 'DE', 'NL', 'ES', 'IT']
-            },
-            // If you've set Shipping Rates in Stripe, you can add:
-            // shipping_options: [{ shipping_rate: 'shr_XXXX' }],
-
-            // Keep a small copy of the cart context (sizes/colors)
-            metadata: {
-                cart: JSON.stringify(items.map(({ id, quantity, size, color }) =>
-                    ({ id, quantity, size, color })
-                ))
-            },
-
-            success_url: `${SITE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${SITE_URL}/cancel.html`
-        });
+        // ... your existing body parsing + line_items + session creation ...
 
         return {
             statusCode: 200,
