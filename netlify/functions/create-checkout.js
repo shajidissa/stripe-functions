@@ -1,53 +1,113 @@
-// This line imports the Stripe library and immediately initializes it
-// using the secret key stored in Netlify's environment variables.
+// netlify/functions/create-checkout.js
+// Secure Stripe Checkout creator for a static site (Netlify Functions).
+// Uses a server-side catalog (mirrors products.json) so prices can't be tampered with.
+
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Netlify's standard function handler
+// ---- Server-side catalog (GBP, pence) matching your products.json ----
+const CURRENCY = 'gbp';
+const CATALOG = {
+    "1": { name: "Classic Black Hoodie", unit_amount: 4999 },
+    "2": { name: "Neon Green Hoodie",    unit_amount: 5499 },
+    "3": { name: "Vintage Red Hoodie",   unit_amount: 5299 },
+    "4": { name: "Minimal White Hoodie", unit_amount: 4799 },
+    "5": { name: "Camo Hoodie",          unit_amount: 5999 },
+    "6": { name: "Tie-Dye Hoodie",       unit_amount: 5699 }
+};
+
+// Optional: if calling this function from a different origin during dev
+const ALLOWED_ORIGINS = [
+    'http://localhost:8888',  // netlify dev default
+    'http://localhost:3000',
+    'http://127.0.0.1:5500',
+    'http://localhost:5173',
+    'http://localhost:63342',
+    // add your deployed site too (replace below):
+    'https://clarity-shop.netlify.app'
+];
+const corsHeaders = (origin) => ({
+    'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+});
+
+// Where to send users after payment/cancel
+const SITE_URL =
+    process.env.SITE_URL ||
+    process.env.URL ||
+    process.env.DEPLOY_PRIME_URL ||
+    'http://localhost:8888';
+
 exports.handler = async (event) => {
-    // Only allow POST requests, as they contain the cart data
+    const origin = event.headers.origin || '';
+
+    if (event.httpMethod === 'OPTIONS') {
+        return { statusCode: 204, headers: corsHeaders(origin) };
+    }
     if (event.httpMethod !== 'POST') {
-        return { statusCode: 405, body: 'Method Not Allowed' };
+        return { statusCode: 405, headers: corsHeaders(origin), body: 'Method Not Allowed' };
     }
 
     try {
-        // The items array is sent from your static site's JavaScript.
-        const { cartItems } = JSON.parse(event.body);
+        const { items } = JSON.parse(event.body || '{}');
+        if (!Array.isArray(items) || items.length === 0) {
+            return { statusCode: 400, headers: corsHeaders(origin), body: 'No items in request.' };
+        }
 
-        // Map your custom cart format to Stripe's required line_items format
-        const line_items = cartItems.map(item => ({
-            price_data: {
-                currency: 'gbp',
-                product_data: {
-                    name: item.name,
-                    // You can also add images or descriptions here
+        // Build Stripe line_items from server-side truth
+        const line_items = items.map((it) => {
+            const id = String(it.id);
+            const qty = Math.max(1, parseInt(it.quantity || 1, 10));
+            const product = CATALOG[id];
+            if (!product) throw new Error(`Unknown product id: ${id}`);
+
+            return {
+                price_data: {
+                    currency: CURRENCY,
+                    product_data: {
+                        name: product.name,
+                    },
+                    unit_amount: product.unit_amount
                 },
-                // Stripe requires the price in the smallest currency unit (pence).
-                unit_amount: item.priceInPence,
-            },
-            quantity: item.quantity,
-        }));
-
-        // Create the secure Stripe Checkout session
-        const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card'],
-            line_items: line_items,
-            mode: 'payment',
-            // **IMPORTANT:** Replace these URLs with your actual GitHub Pages URLs
-            success_url: `https://shajidissa.github.io/success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `https://shajidissa.github.io/cancel`,
+                quantity: qty
+            };
         });
 
-        // Send the session ID back to your static site to trigger the redirect
+        const session = await stripe.checkout.sessions.create({
+            mode: 'payment',
+            line_items,
+            allow_promotion_codes: true,
+
+            // Physical goods → collect addresses (adjust countries as needed)
+            billing_address_collection: 'required',
+            shipping_address_collection: {
+                allowed_countries: ['GB', 'IE', 'FR', 'DE', 'NL', 'ES', 'IT']
+            },
+            // If you've set Shipping Rates in Stripe, you can add:
+            // shipping_options: [{ shipping_rate: 'shr_XXXX' }],
+
+            // Keep a small copy of the cart context (sizes/colors)
+            metadata: {
+                cart: JSON.stringify(items.map(({ id, quantity, size, color }) =>
+                    ({ id, quantity, size, color })
+                ))
+            },
+
+            success_url: `${SITE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${SITE_URL}/cancel.html`
+        });
+
         return {
             statusCode: 200,
-            body: JSON.stringify({ sessionId: session.id }),
+            headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: session.id, url: session.url })
         };
-
-    } catch (error) {
-        console.error('Stripe Checkout Error:', error);
+    } catch (err) {
+        console.error('Stripe Checkout Error:', err);
         return {
             statusCode: 500,
-            body: JSON.stringify({ error: 'Failed to create Stripe Checkout session.' }),
+            headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ error: 'Failed to create Stripe Checkout session.' })
         };
     }
 };
