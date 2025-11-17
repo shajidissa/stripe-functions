@@ -1,9 +1,15 @@
 // netlify/functions/create-checkout.js
+// Secure Stripe Checkout creator for a static site (Netlify Functions).
+// Uses a server-side catalog so browser can't tamper prices.
+// Redirects back to a subfolder in dev via client-sent `basePath`.
+
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// --- CORS: local + deployed ---
+// --- CORS: local dev + deployed site ---
 const ALLOWED_ORIGINS = [
     'http://localhost:63342',
+    'http://127.0.0.1:63342',
+    'http://localhost:8888',           // if you ever use `netlify dev`
     'https://clarity-shop.netlify.app'
 ];
 const corsHeaders = (origin) => ({
@@ -12,14 +18,14 @@ const corsHeaders = (origin) => ({
     'Access-Control-Allow-Headers': 'Content-Type'
 });
 
-// --- Redirect base (defaults to your live site) ---
+// --- Where success/cancel should land by default (overridable via env) ---
 const SITE_URL =
-    process.env.SITE_URL ||
+    process.env.SITE_URL ||             // e.g. set to http://localhost:63342/clarity-shop in dev if you prefer
     process.env.URL ||
     process.env.DEPLOY_PRIME_URL ||
     'https://clarity-shop.netlify.app';
 
-// --- Secure server-side catalog (GBP, pence) ---
+// --- Server-side catalog (GBP, pence) matching your products.json ---
 const CURRENCY = 'gbp';
 const CATALOG = {
     "1": { name: "Classic Black Hoodie", unit_amount: 4999 },
@@ -30,22 +36,23 @@ const CATALOG = {
     "6": { name: "Tie-Dye Hoodie",       unit_amount: 5699 }
 };
 
-function devBaseFromReferer(event, origin) {
+// --- Helpers ---
+function isLocalOrigin(origin) {
     try {
-        const ref = new URL(event.headers.referer || '');
-        if (origin && ref.origin === origin) {
-            // e.g. /clarity-shop/cart.html -> "clarity-shop"
-            const firstSegment = ref.pathname.split('/').filter(Boolean)[0];
-            if (firstSegment) return `${origin}/${firstSegment}`;
-        }
-    } catch (_) {}
-    return null;
+        const u = new URL(origin);
+        return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    } catch { return false; }
+}
+function normalizeBasePath(basePath) {
+    if (!basePath) return '';
+    // Ensure leading slash, remove trailing slashes
+    return ('/' + String(basePath).replace(/^\/+/, '')).replace(/\/+$/, '');
 }
 
 exports.handler = async (event) => {
     const origin = event.headers.origin || '';
 
-    // Preflight
+    // CORS preflight
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 204, headers: corsHeaders(origin) };
     }
@@ -54,12 +61,12 @@ exports.handler = async (event) => {
     }
 
     try {
-        const { items } = JSON.parse(event.body || '{}');
+        const { items, basePath } = JSON.parse(event.body || '{}');
         if (!Array.isArray(items) || items.length === 0) {
             return { statusCode: 400, headers: corsHeaders(origin), body: 'No items in request.' };
         }
 
-        // Build Stripe line_items from server truth
+        // Build Stripe line_items from server-side truth (ignore client prices)
         const line_items = items.map((it) => {
             const id = String(it.id);
             const qty = Math.max(1, parseInt(it.quantity || 1, 10));
@@ -76,44 +83,45 @@ exports.handler = async (event) => {
             };
         });
 
-        function isLocalOrigin(origin) {
-            try {
-                const u = new URL(origin);
-                return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
-            } catch { return false; }
-        }
+        // For localhost calls, use client-sent basePath (e.g. "/clarity-shop")
+        const cleanBase = normalizeBasePath(basePath);
+        const base = isLocalOrigin(origin) && cleanBase
+            ? `${origin}${cleanBase}`                 // e.g. http://localhost:63342/clarity-shop
+            : SITE_URL;                               // e.g. https://clarity-shop.netlify.app
 
-        const base = isLocalOrigin(origin)
-            ? (devBaseFromReferer(event, origin) || SITE_URL)
-            : SITE_URL;
-
-        // 👇 session is defined IN this try block
         const session = await stripe.checkout.sessions.create({
             mode: 'payment',
             line_items,
             allow_promotion_codes: true,
+
+            // Physical goods → collect addresses (adjust as needed)
             billing_address_collection: 'required',
             shipping_address_collection: { allowed_countries: ['GB', 'IE', 'FR', 'DE', 'NL', 'ES', 'IT'] },
+            // If you created Shipping Rates in Stripe, you can add:
+            // shipping_options: [{ shipping_rate: 'shr_XXXX' }],
+
+            // Optional: store cart context (size/color)
             metadata: {
-                cart: JSON.stringify(items.map(({ id, quantity, size, color }) => ({ id, quantity, size, color })))
+                cart: JSON.stringify(
+                    items.map(({ id, quantity, size, color }) => ({ id, quantity, size, color }))
+                )
             },
+
             success_url: `${base}/success.html?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url:  `${base}/cancel.html`
         });
 
-        // ✅ Return from inside the try, where `session` is in scope
         return {
             statusCode: 200,
             headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: session.id, url: session.url })
         };
-
     } catch (err) {
         console.error('Stripe Checkout Error:', err);
         return {
             statusCode: 500,
             headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
-            // temporary: surface the message to help debug
+            // In dev, surfacing the message helps; remove for prod if you prefer
             body: JSON.stringify({ error: err.message })
         };
     }
