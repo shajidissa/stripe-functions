@@ -1,0 +1,5 @@
+[build]
+  # The base command to run when building your functions (e.g., installing dependencies)
+  command = "npm install"
+  # This tells Netlify where to look for your function files
+  functions = "netlify/functions"
