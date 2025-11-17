@@ -30,6 +30,18 @@ const CATALOG = {
     "6": { name: "Tie-Dye Hoodie",       unit_amount: 5699 }
 };
 
+function devBaseFromReferer(event, origin) {
+    try {
+        const ref = new URL(event.headers.referer || '');
+        if (origin && ref.origin === origin) {
+            // e.g. /clarity-shop/cart.html -> "clarity-shop"
+            const firstSegment = ref.pathname.split('/').filter(Boolean)[0];
+            if (firstSegment) return `${origin}/${firstSegment}`;
+        }
+    } catch (_) {}
+    return null;
+}
+
 exports.handler = async (event) => {
     const origin = event.headers.origin || '';
 
@@ -64,6 +76,11 @@ exports.handler = async (event) => {
             };
         });
 
+        const base =
+            origin.startsWith('http://localhost')
+                ? (devBaseFromReferer(event, origin) || SITE_URL)
+                : SITE_URL;
+
         // 👇 session is defined IN this try block
         const session = await stripe.checkout.sessions.create({
             mode: 'payment',
@@ -74,8 +91,8 @@ exports.handler = async (event) => {
             metadata: {
                 cart: JSON.stringify(items.map(({ id, quantity, size, color }) => ({ id, quantity, size, color })))
             },
-            success_url: `${SITE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${SITE_URL}/cancel.html`
+            success_url: `${base}/success.html?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url:  `${base}/cancel.html`
         });
 
         // ✅ Return from inside the try, where `session` is in scope
