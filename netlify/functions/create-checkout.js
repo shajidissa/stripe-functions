@@ -76,10 +76,16 @@ exports.handler = async (event) => {
             };
         });
 
-        const base =
-            origin.startsWith('http://localhost')
-                ? (devBaseFromReferer(event, origin) || SITE_URL)
-                : SITE_URL;
+        function isLocalOrigin(origin) {
+            try {
+                const u = new URL(origin);
+                return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+            } catch { return false; }
+        }
+
+        const base = isLocalOrigin(origin)
+            ? (devBaseFromReferer(event, origin) || SITE_URL)
+            : SITE_URL;
 
         // 👇 session is defined IN this try block
         const session = await stripe.checkout.sessions.create({
