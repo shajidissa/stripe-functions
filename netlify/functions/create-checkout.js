@@ -2,6 +2,7 @@
 // Secure Stripe Checkout creator for a static site (Netlify Functions).
 // Uses a server-side catalog so browser can't tamper prices.
 // Redirects back to a subfolder in dev via client-sent `basePath`.
+// Adds variant info (size/color) + image to Stripe line items.
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
@@ -48,6 +49,12 @@ function normalizeBasePath(basePath) {
     // Ensure leading slash, remove trailing slashes
     return ('/' + String(basePath).replace(/^\/+/, '')).replace(/\/+$/, '');
 }
+// Ensure Stripe gets an absolute HTTPS image URL
+function absolutizeImage(base, img) {
+    if (!img) return undefined;
+    if (/^https?:\/\//i.test(img)) return img;
+    return `${base.replace(/\/$/, '')}/${String(img).replace(/^\//, '')}`;
+}
 
 exports.handler = async (event) => {
     const origin = event.headers.origin || '';
@@ -66,28 +73,43 @@ exports.handler = async (event) => {
             return { statusCode: 400, headers: corsHeaders(origin), body: 'No items in request.' };
         }
 
-        // Build Stripe line_items from server-side truth (ignore client prices)
-        const line_items = items.map((it) => {
-            const id = String(it.id);
-            const qty = Math.max(1, parseInt(it.quantity || 1, 10));
-            const product = CATALOG[id];
-            if (!product) throw new Error(`Unknown product id: ${id}`);
-
-            return {
-                price_data: {
-                    currency: CURRENCY,
-                    product_data: { name: product.name },
-                    unit_amount: product.unit_amount
-                },
-                quantity: qty
-            };
-        });
-
         // For localhost calls, use client-sent basePath (e.g. "/clarity-shop")
         const cleanBase = normalizeBasePath(basePath);
         const base = isLocalOrigin(origin) && cleanBase
             ? `${origin}${cleanBase}`                 // e.g. http://localhost:63342/clarity-shop
             : SITE_URL;                               // e.g. https://clarity-shop.netlify.app
+
+        // Build Stripe line_items from server-side truth (ignore client prices)
+        const line_items = items.map((it) => {
+            const id  = String(it.id);
+            const qty = Math.max(1, parseInt(it.quantity || 1, 10));
+            const product = CATALOG[id];
+            if (!product) throw new Error(`Unknown product id: ${id}`);
+
+            // Build display name with variant details, e.g. "Neon Green Hoodie — M / Neon Green"
+            const suffix = [it.size, it.color].filter(Boolean).join(' / ');
+            const displayName = suffix ? `${product.name} — ${suffix}` : product.name;
+
+            // Absolute product image for Stripe (if provided from client cart)
+            const imageUrl = absolutizeImage(base, it.image || (it.images && it.images[0]));
+
+            return {
+                price_data: {
+                    currency: CURRENCY,
+                    product_data: {
+                        name: displayName,
+                        ...(imageUrl ? { images: [imageUrl] } : {}),
+                        metadata: {
+                            base_id: id,
+                            size: it.size || '',
+                            color: it.color || ''
+                        }
+                    },
+                    unit_amount: product.unit_amount
+                },
+                quantity: qty
+            };
+        });
 
         const session = await stripe.checkout.sessions.create({
             mode: 'payment',
@@ -97,10 +119,10 @@ exports.handler = async (event) => {
             // Physical goods → collect addresses (adjust as needed)
             billing_address_collection: 'required',
             shipping_address_collection: { allowed_countries: ['GB', 'IE', 'FR', 'DE', 'NL', 'ES', 'IT'] },
-            // If you created Shipping Rates in Stripe, you can add:
+            // If/when you use Stripe-managed Shipping Rates, add:
             // shipping_options: [{ shipping_rate: 'shr_XXXX' }],
 
-            // Optional: store cart context (size/color)
+            // Optional: store cart context (variant info) for fulfillment/webhooks
             metadata: {
                 cart: JSON.stringify(
                     items.map(({ id, quantity, size, color }) => ({ id, quantity, size, color }))
