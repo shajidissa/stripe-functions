@@ -2,7 +2,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const ALLOWED_ORIGINS = [
     'http://localhost:63342',
-    'https://clarity-shop.netlify.app'
+    'https://astonishing-empanada-8e5445.netlify.app'
 ];
 const cors = (origin) => ({
     'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
