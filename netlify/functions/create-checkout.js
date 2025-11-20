@@ -11,7 +11,7 @@ const ALLOWED_ORIGINS = [
     'http://localhost:63342',
     'http://127.0.0.1:63342',
     'http://localhost:8888',           // if you ever use `netlify dev`
-    'https://astonishing-empanada-8e5445.netlify.app'
+    'https://stripe-functions-clarity.netlify.app'
 ];
 const corsHeaders = (origin) => ({
     'Access-Control-Allow-Origin': ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
@@ -24,7 +24,7 @@ const SITE_URL =
     process.env.SITE_URL ||             // e.g. set to http://localhost:63342/clarity-shop in dev if you prefer
     process.env.URL ||
     process.env.DEPLOY_PRIME_URL ||
-    'https://astonishing-empanada-8e5445.netlify.app';
+    'https://stripe-functions-clarity.netlify.app';
 
 // --- Server-side catalog (GBP, pence) matching your products.json ---
 const CURRENCY = 'gbp';
@@ -77,7 +77,7 @@ exports.handler = async (event) => {
         const cleanBase = normalizeBasePath(basePath);
         const base = isLocalOrigin(origin) && cleanBase
             ? `${origin}${cleanBase}`                 // e.g. http://localhost:63342/clarity-shop
-            : SITE_URL;                               // e.g. https://astonishing-empanada-8e5445.netlify.app
+            : SITE_URL;                               // e.g. https://stripe-functions-clarity.netlify.app
 
         // Build Stripe line_items from server-side truth (ignore client prices)
         const line_items = items.map((it) => {
